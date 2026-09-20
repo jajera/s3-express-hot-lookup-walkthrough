@@ -1,0 +1,86 @@
+---
+title: Architecture
+description: What this lab builds — same-AZ Express vs Standard bakeoff, ECR harness image, and how the pieces fit.
+sidebar:
+  label: Architecture
+---
+
+import { Aside } from "@astrojs/starlight/components";
+import Checklist from "@/components/Checklist.astro";
+import Tooltip from "@/components/Tooltip.astro";
+import architecture from "@/assets/diagrams/architecture.svg";
+
+<Checklist
+  id="architecture"
+  items={[
+    "Know what the lab proves",
+    "Know the main components before you run commands",
+  ]}
+/>
+
+## Overview
+
+A **same-AZ shared hot lookup** bakeoff in `ap-southeast-2`. An
+<Tooltip term="s3-express" label="S3 Express One Zone" /> <Tooltip term="directory-bucket" />
+sits in <Tooltip term="az-id" label="apse2-az1" />. A Graviton EC2 instance in that AZ continuously
+GETs the same small keys from Express and from a Standard general-purpose bucket, then shows live
+latency on a built-in <Tooltip term="harness" /> dashboard.
+
+You are not building a production cache, Mountpoint, or multi-AZ design — see
+[Where Express fits](/guidance/where-express-fits/) for the single-AZ durability trade-off.
+
+<figure>
+  <img src={architecture.src} alt="Durable image pipeline: operator runs image.sh through CodeBuild into ECR. Lab VPC 10.87.0.0/16 with a public subnet in apse2-az1 hosts an m7g.large running the harness on :8080; gateway endpoints s3 and s3express reach the Standard bakeoff bucket and the Express directory bucket. Dashboard shows p50/p90 and Standard divided by Express." />
+</figure>
+
+## What you build
+
+| Piece | What it is |
+| ----- | ---------- |
+| Image pipeline | `./scripts/image.sh` — ECR + CodeBuild (arm64). Survives `demo.sh down`; remove with `image.sh down`. |
+| Lab stack | `./scripts/demo.sh` — VPC, dual gateway endpoints, two buckets, IAM (+ SSM), `m7g.large`, seed. |
+| Harness | Container on EC2: continuous GETs to both buckets; dashboard at `:8080`. |
+| Dashboard | p50 / p90 / p99 and Standard÷Express ratio — public URL or SSM port-forward. |
+
+## Why these constraints
+
+| Constraint | Why it matters |
+| ---------- | -------------- |
+| Compute in `apse2-az1` | Express is single-AZ. Cross-AZ or laptop GETs hide the product. |
+| Two gateway endpoints | `….s3` for Standard; `….s3express` for the directory bucket. |
+| <Tooltip term="create-session" label="CreateSession" /> | Zonal object APIs use session auth, not classic `s3:GetObject` on Express. |
+| Identical seed keys | Bakeoff is fair only when both buckets hold the same objects. |
+| arm64 image + `m7g.large` | CodeBuild builds for Graviton; EC2 pulls that tag from ECR. |
+| `AmazonSSMManagedInstanceCore` | Session Manager / port-forward without opening a bastion. |
+
+## Two lifecycles
+
+```text
+Once (or when the harness changes)
+  ./scripts/image.sh up
+  ./scripts/image.sh build     →  ECR :tag
+
+Each lab run
+  ./scripts/demo.sh up         →  VPC + buckets + EC2 (pulls image)
+  ./scripts/demo.sh status|dash|port-forward
+  ./scripts/demo.sh down       →  lab only (image stack remains)
+
+When finished — remove everything
+  ./scripts/demo.sh down       →  lab (if still up)
+  ./scripts/image.sh down      →  ECR + CodeBuild + source bucket
+```
+
+
+<Aside type="note">
+  Next: <a href="/cli/">CLI overview</a>, then build the image before creating the VPC.
+</Aside>
+
+## References
+
+- [High-performance directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-high-performance.html)
+- [Directory bucket AZ networking](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-az-networking.html)
+- [Authenticating and authorizing](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-authenticating-authorizing.html)
+- [S3 Express Regions and Zones](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-Regions-and-Zones.html)
+- [Amazon ECR](https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html)
+- [AWS CodeBuild](https://docs.aws.amazon.com/codebuild/latest/userguide/welcome.html)
+- [Session Manager instance profile](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-getting-started-instance-profile.html)

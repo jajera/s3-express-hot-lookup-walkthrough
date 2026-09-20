@@ -1,0 +1,160 @@
+---
+title: Read the dashboard
+description: How to read Express vs Standard p50/p90 ratios — public URL or SSM port-forward to localhost.
+sidebar:
+  label: Read the dashboard
+---
+
+import { Steps, Aside, Tabs, TabItem } from "@astrojs/starlight/components";
+import Checklist from "@/components/Checklist.astro";
+import Tooltip from "@/components/Tooltip.astro";
+import dashUi from "@/assets/cli/dashboard-ui.png";
+
+<Checklist
+  id="cli-dashboard"
+  items={[
+    "Dashboard reachable on :8080 (public or localhost via SSM)",
+    "Can interpret Standard÷Express p50 ratio",
+  ]}
+/>
+
+## Overview
+
+The <Tooltip term="harness" /> serves a small dashboard on **port 8080**. Continuous GETs against
+the same hot keys produce latency percentiles for Express and Standard. The headline ratio is
+**Standard p50 ÷ Express p50** (higher means Express is faster on that percentile). Prefer the
+ratio over absolute milliseconds from a quiet lab.
+
+| Field | Meaning |
+| ----- | ------- |
+| Express p50 / p90 / p99 | GET latency for the directory bucket |
+| Standard p50 / p90 / p99 | Same keys against the general-purpose bucket |
+| Standard ÷ Express p50 | How many times slower Standard is vs Express at p50 |
+| samples / errors | Rolling window (default 300s) plus cumulative errors |
+
+```bash frame="terminal"
+export AWS_PROFILE=sandbox
+export AWS_REGION=ap-southeast-2
+```
+
+## Steps
+
+<Steps>
+
+1. Open the dashboard — pick **public IP** or **SSM port-forward** to view on localhost.
+
+   <Tabs>
+   <TabItem label="Public URL">
+
+   ```bash frame="terminal"
+   ./scripts/demo.sh dash
+   ```
+
+   Looks like (verified shape; IP is yours):
+
+   ```text
+   http://203.0.113.10:8080/
+   Local view (SSM): ./scripts/demo.sh port-forward  →  http://127.0.0.1:8080/
+   ```
+
+   Open that URL in a browser. Security group ingress allows TCP 8080 (lab default
+   `0.0.0.0/0`).
+
+   </TabItem>
+   <TabItem label="SSM port-forward (localhost)">
+
+   Requires the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+   on your laptop and an instance role with `AmazonSSMManagedInstanceCore` (see
+   [IAM and EC2](/cli/setup/iam-and-ec2/)). Leave the session running while you browse.
+
+   ```bash frame="terminal"
+   # optional: LOCAL_PORT=18080 ./scripts/demo.sh port-forward
+   ./scripts/demo.sh port-forward
+   ```
+
+   Looks like (verified shape):
+
+   ```text
+   Forwarding remote :8080 → http://127.0.0.1:8080/  (Ctrl+C to stop)
+   …
+   Port 8080 opened for sessionId …
+   Waiting for connections...
+   ```
+
+   Then open **http://127.0.0.1:8080/** (or your `LOCAL_PORT`). Equivalent raw CLI:
+
+   ```bash frame="terminal"
+   aws ssm start-session \
+     --target "$(jq -r .instanceId .lab-state.json)" \
+     --document-name AWS-StartPortForwardingSession \
+     --parameters '{"portNumber":["8080"],"localPortNumber":["8080"]}'
+   ```
+
+   </TabItem>
+   </Tabs>
+
+2. Wait until both series have enough samples (hundreds of GETs), then read the headline
+   (**Express is N× faster**), the **ms saved at p50**, and the equal-scale race bars
+   (Standard = full width). p50 / p90 / p99 stay in the two panels.
+
+   <figure>
+     <img src={dashUi.src} alt="Harness dashboard: Express and Standard p50/p90/p99 panels, headline Express is about 4× faster, ms saved at p50, and equal-scale race bars. Bucket names use EXAMPLE placeholders; account id redacted to 123456789012." />
+     <figcaption>
+       Live harness UI (this lab ≈4× at p50). Bucket suffix and account id are redacted.
+     </figcaption>
+   </figure>
+
+   <Aside type="tip">
+     Co-location matters. If the instance is not in the AZ that maps to
+     <code>apse2-az1</code>, Express ratios will look worse than the design intent.
+   </Aside>
+
+3. Cross-check with CLI status and `/api/stats`.
+
+   ```bash frame="terminal"
+   ./scripts/demo.sh status
+   curl -sS "http://$(jq -r .publicIp .lab-state.json):8080/api/stats" | jq '{
+     express: .express|{count,errors,p50_ms,p90_ms},
+     standard: .standard|{count,errors,p50_ms,p90_ms},
+     standard_over_express_p50
+   }'
+   ```
+
+   Looks like (verified in this lab; **your numbers will differ** — cite the ratio, not a
+   fixed ms claim):
+
+   ```json
+   {
+     "express": { "count": 3671, "errors": 0, "p50_ms": 6.07, "p90_ms": 6.38 },
+     "standard": { "count": 3671, "errors": 0, "p50_ms": 25.19, "p90_ms": 28.05 },
+     "standard_over_express_p50": 4.15
+   }
+   ```
+
+   Via port-forward, use `http://127.0.0.1:8080/api/stats` instead of the public IP.
+
+</Steps>
+
+## Verify
+
+| Check | Expect |
+| ----- | ------ |
+| Dashboard HTML | Loads on `:8080` (public or `127.0.0.1`) |
+| Sample counts | Climbing / non-zero in the rolling window |
+| Errors | `0` on both sides after warm-up |
+| Ratio | `standard_over_express_p50` ≫ 1 when co-located (this lab ~4× at p50) |
+| SSM forward | `session-manager-plugin` installed; `get-connection-status` → `connected` |
+
+## Next
+
+When finished, [Tear down](/cli/teardown/) so On-Demand and storage charges stop. Then read
+[Where Express fits](/guidance/where-express-fits/) before treating Express as production-only
+storage.
+
+## References
+
+- [S3 Express One Zone](https://aws.amazon.com/s3/storage-classes/express-one-zone/)
+- [Optimizing for performance (co-locate compute)](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-high-performance.html)
+- [Differences for directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-differences.html)
+- [Start a Session Manager session (port forwarding)](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-sessions-start.html)
+- [Install the Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)

@@ -1,0 +1,192 @@
+---
+title: Seed and run harness
+description: Put identical hot keys in both buckets; the lab EC2 already pulls the ECR harness image at bootstrap.
+sidebar:
+  label: Seed and run harness
+---
+
+import { Steps, Aside } from "@astrojs/starlight/components";
+import Checklist from "@/components/Checklist.astro";
+import Tooltip from "@/components/Tooltip.astro";
+import harness from "@/assets/diagrams/harness.svg";
+
+<Checklist
+  id="cli-harness"
+  items={[
+    "Same hot keys present in Express and Standard",
+    "Harness container running on the lab EC2 (pulled from ECR)",
+    "healthz returns 200",
+  ]}
+/>
+
+## Overview
+
+Seed identical hot keys into **both** buckets, then the <Tooltip term="harness" /> container
+(pulled from ECR by EC2 user-data) issues continuous GETs to each — plain GET to Standard,
+GET + <Tooltip term="create-session" label="CreateSession" /> to the directory bucket — and serves
+the dashboard on port **8080**.
+
+<figure>
+  <img src={harness.src} alt="The harness container on the lab EC2 (apse2-az1) is pulled from ECR at boot, then issues continuous GETs to both buckets — plain GET to the Standard bucket and GET plus CreateSession to the Express directory bucket — feeding a dashboard at /api/stats that reports p50/p90 and the Standard-over-Express ratio. Seeding puts identical hot/ keys in both buckets first." />
+</figure>
+
+| Setting | Default |
+| ------- | ------- |
+| Object count | `64` |
+| Object size | `16384` bytes |
+| Prefix | `hot/` (keys `hot/obj-0000.bin` …) |
+| Port | `8080` |
+
+`demo.sh up` already seeds once. Use `seed` to re-upload. Use `harness` for rebuild / re-pull
+guidance — it does **not** build on the instance.
+
+<Aside type="caution">
+  Seeding writes objects (billable requests + storage). The harness keeps issuing GETs until you
+  stop it or tear down.
+</Aside>
+
+## Steps
+
+Run from the **repo root** with lab state present (`.lab-state.json` from `demo.sh up`).
+
+```bash frame="terminal"
+export AWS_PROFILE=sandbox
+export AWS_REGION=ap-southeast-2
+export S3X_LAB_ALLOW_AWS=1
+```
+
+<Steps>
+
+1. Reseed identical keys into Standard and Express (skip if you just ran `demo.sh up`).
+
+   ```bash frame="terminal"
+   ./scripts/demo.sh seed
+   ```
+
+   Looks like (verified):
+
+   ```text
+   Uploading 64 objects (16384 bytes) to Standard and Express…
+   Seeded 64 keys under hot/ on both buckets.
+   ```
+
+   <Aside type="tip">
+     Directory buckets reject <code>aws s3 sync</code>. The wrapper uses
+     <code>aws s3 sync</code> for Standard and <code>aws s3 cp --recursive</code> for Express.
+   </Aside>
+
+2. Confirm object counts on both buckets.
+
+   ```bash frame="terminal"
+   STD=$(jq -r .standardBucket .lab-state.json)
+   EXP=$(jq -r .expressBucket .lab-state.json)
+   aws s3api list-objects-v2 --bucket "$STD" --prefix hot/ \
+     --query 'length(Contents)' --output text
+   aws s3api list-objects-v2 --bucket "$EXP" --prefix hot/ \
+     --query 'length(Contents)' --output text
+   ```
+
+   Looks like (verified):
+
+   ```text
+   64
+   64
+   ```
+
+3. Confirm the harness is healthy (bootstrap pulls from ECR; wait a few minutes after `up`).
+
+   ```bash frame="terminal"
+   ./scripts/demo.sh status
+   ```
+
+   Looks like (verified shape; IDs and IP are yours):
+
+   ```text
+   region=ap-southeast-2 profile=sandbox suffix=EXAMPLE
+   …
+   standard-objects=64 express-objects=64
+   harness-healthz=200 (http://203.0.113.10:8080/)
+   ```
+
+4. Hit `/healthz` directly.
+
+   ```bash frame="terminal"
+   curl -sS "http://$(jq -r .publicIp .lab-state.json):8080/healthz"
+   ```
+
+   Looks like (verified):
+
+   ```json
+   {"ok":true}
+   ```
+
+5. Optional — rebuild the image and print re-pull guidance (does not restart the container by
+   itself).
+
+   ```bash frame="terminal"
+   ./scripts/image.sh build
+   ./scripts/demo.sh harness
+   ```
+
+   Looks like (`harness` guidance; image tag is your git short SHA):
+
+   ```text
+   Harness images are built by CodeBuild into ECR (not on the lab EC2).
+
+     Rebuild and push:
+       export S3X_LAB_ALLOW_AWS=1
+       ./scripts/image.sh build
+
+     Then either:
+       - Re-run ./scripts/demo.sh up with a new LAB_SUFFIX …, or
+       - On the instance: docker pull …/s3x-hotlookup-harness:c3cad1d && docker restart s3x-harness
+
+   Current lab image: 123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/s3x-hotlookup-harness:c3cad1d
+   Dashboard: http://203.0.113.10:8080/
+   ```
+
+</Steps>
+
+## Verify
+
+```bash frame="terminal"
+./scripts/demo.sh status
+curl -sS "http://$(jq -r .publicIp .lab-state.json):8080/healthz"
+curl -sS "http://$(jq -r .publicIp .lab-state.json):8080/api/stats" | jq '{
+  object_count, object_prefix,
+  express: .express|{count,errors,p50_ms,p90_ms},
+  standard: .standard|{count,errors,p50_ms,p90_ms},
+  standard_over_express_p50
+}'
+```
+
+Looks like (verified shape; latencies vary — use ratios, not absolute ms, in claims):
+
+```json
+{
+  "object_count": 64,
+  "object_prefix": "hot/",
+  "express": { "count": 3536, "errors": 0, "p50_ms": 6.173, "p90_ms": 6.553 },
+  "standard": { "count": 3536, "errors": 0, "p50_ms": 25.105, "p90_ms": 28.109 },
+  "standard_over_express_p50": 4.07
+}
+```
+
+| Check | Expect |
+| ----- | ------ |
+| Object counts | `64` on both buckets under `hot/` |
+| `harness-healthz` | `200` |
+| `/healthz` | `{"ok":true}` |
+| `/api/stats` errors | `0` on both sides after warm-up |
+| Sample counts | Climbing while the harness runs |
+
+## Next
+
+Continue to [Read the dashboard](/cli/dashboard/).
+
+## References
+
+- [Amazon ECR User Guide](https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html)
+- [Authenticating and authorizing with S3 Express](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-authenticating-authorizing.html)
+- [High-performance directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-high-performance.html)
+- [Differences for directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-differences.html)

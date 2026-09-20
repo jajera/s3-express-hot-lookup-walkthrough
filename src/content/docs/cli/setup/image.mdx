@@ -1,0 +1,126 @@
+---
+title: Build the harness image
+description: Create the durable ECR repository and CodeBuild project, then push the arm64 harness image.
+sidebar:
+  label: Build harness image
+---
+
+import { Steps, Aside } from "@astrojs/starlight/components";
+import Checklist from "@/components/Checklist.astro";
+import pipeline from "@/assets/diagrams/image-pipeline.svg";
+
+<Checklist
+  id="cli-image"
+  items={[
+    "ECR repository and CodeBuild project exist",
+    "Harness image pushed (tag visible in ECR)",
+  ]}
+/>
+
+## Overview
+
+One arm64 Docker image, built by CodeBuild and pushed to ECR. EC2 **pulls** it later — it never
+`docker build`s on the box. This stack outlives a single lab run (`demo.sh down` leaves it), so
+finish with `./scripts/image.sh down` when you are done — see [Tear down](/cli/teardown/).
+
+<figure>
+  <img src={pipeline.src} alt="Operator runs image.sh: source zip goes to a source bucket, CodeBuild builds an arm64 image and pushes it to ECR; EC2 pulls that image later during the lab run." />
+</figure>
+
+| Resource | Name |
+| -------- | ---- |
+| ECR repository | `s3x-hotlookup-harness` |
+| CodeBuild project | `s3x-hotlookup-harness` |
+| CodeBuild role | `s3x-hotlookup-codebuild` |
+| Source bucket | `s3x-hotlookup-cb-${ACCOUNT_ID}` |
+| State file | `.image-state.json` (gitignored) |
+
+<Aside type="caution">
+  Creating the pipeline and running builds is billable (ECR storage, CodeBuild minutes). Full
+  teardown is <code>./scripts/demo.sh down</code> then <code>./scripts/image.sh down</code>.
+</Aside>
+
+## Steps
+
+<Steps>
+
+1. Export the lab profile and Region, then create the durable pipeline (idempotent if it already
+   exists).
+
+   ```bash frame="terminal"
+   export AWS_PROFILE=sandbox
+   export AWS_REGION=ap-southeast-2
+   export S3X_LAB_ALLOW_AWS=1
+
+   ./scripts/image.sh up
+   ```
+
+   The wrapper echoes each AWS call. It creates the ECR repository, source bucket, IAM role, and
+   CodeBuild project (`ARM_CONTAINER`, image `aws/codebuild/amazonlinux-aarch64-standard:3.0`),
+   then writes `.image-state.json`.
+
+   Looks like (verified in `ap-southeast-2`):
+
+   ```text
+   Image pipeline is ready.
+
+     ECR repository   s3x-hotlookup-harness
+     ECR URI          123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/s3x-hotlookup-harness
+     CodeBuild        s3x-hotlookup-harness
+     Source bucket    s3://s3x-hotlookup-cb-123456789012
+     Service role     arn:aws:iam::123456789012:role/s3x-hotlookup-codebuild
+   ```
+
+2. Build and push the image. CodeBuild zips `harness/`, uploads it to the source bucket, starts a
+   build, and waits until status is `SUCCEEDED`. Default tag is the git short SHA (or a timestamp
+   if git is unavailable); `:latest` is always pushed too.
+
+   ```bash frame="terminal"
+   ./scripts/image.sh build
+   # optional override:
+   # IMAGE_TAG=$(git rev-parse --short HEAD) ./scripts/image.sh build
+   ```
+
+   Looks like (verified in `ap-southeast-2`; tag is your git short SHA):
+
+   ```text
+   Started build s3x-hotlookup-harness:… (tag=c3cad1d)
+     buildStatus=IN_PROGRESS
+     …
+     buildStatus=SUCCEEDED
+
+   Build succeeded.
+
+     Image  123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/s3x-hotlookup-harness:c3cad1d
+     Also   123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/s3x-hotlookup-harness:latest
+   ```
+
+</Steps>
+
+## Verify
+
+```bash frame="terminal"
+./scripts/image.sh status
+```
+
+Looks like (verified in `ap-southeast-2`):
+
+```text
+ecr=s3x-hotlookup-harness
+uri=123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/s3x-hotlookup-harness
+tag=c3cad1d
+```
+
+Plus a short table of recent image tags from ECR (for example `c3cad1d,latest`). On failure, check
+CloudWatch Logs for `/aws/codebuild/s3x-hotlookup-harness`.
+
+## Next
+
+Continue to [Create the VPC](/cli/setup/vpc/).
+
+## References
+
+- [Amazon ECR User Guide](https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html)
+- [Using Amazon ECR with the AWS CLI](https://docs.aws.amazon.com/AmazonECR/latest/userguide/getting-started-cli.html)
+- [AWS CodeBuild User Guide](https://docs.aws.amazon.com/codebuild/latest/userguide/welcome.html)
+- [CodeBuild build specification reference](https://docs.aws.amazon.com/codebuild/latest/userguide/build-spec-ref.html)
