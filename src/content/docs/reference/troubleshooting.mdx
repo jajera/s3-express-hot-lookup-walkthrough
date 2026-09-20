@@ -1,0 +1,59 @@
+---
+title: Troubleshooting
+description: AZ mapping, CreateSession, SSM, Express sync/tagging, endpoints, and harness readiness.
+sidebar:
+  label: Troubleshooting
+---
+
+import Checklist from "@/components/Checklist.astro";
+
+<Checklist
+  id="ref-troubleshooting"
+  items={[
+    "Can diagnose the common failure modes",
+  ]}
+/>
+
+## Overview
+
+| Symptom | Diagnosis | Fix |
+| ------- | --------- | --- |
+| Directory create fails on AZ name | Used `ap-southeast-2a` instead of AZ ID | Use `apse2-az1` in the bucket name and `Location.Name` |
+| Wrong AZ / poor Express latency | Subnet/EC2 not in the AZ mapped to `apse2-az1` | `describe-availability-zones --zone-ids apse2-az1`; recreate there |
+| `AccessDenied` on Express GET/PUT | Missing `s3express:CreateSession` | Grant CreateSession on the directory bucket ARN; wait for IAM |
+| `InvalidAccessPoint` / endpoint errors | Missing `s3express` gateway endpoint | Create `com.amazonaws.ap-southeast-2.s3express` (keep `…s3`) |
+| `aws s3 sync` fails on Express | Directory buckets reject sync | `aws s3 cp … --recursive` (Standard may still use sync) |
+| `MethodNotAllowed` on `put-bucket-tagging` | Classic tagging API on a directory bucket | `aws s3control tag-resource` on the `s3express` bucket ARN |
+| `KeyCount` is `None` / odd list output | Directory list response shape | Use `--query 'length(Contents)'` |
+| SSM `Not connected` / port-forward fails | Role lacks SSM managed policy, or agent not up | Attach `AmazonSSMManagedInstanceCore`; reboot or wait; install Session Manager plugin locally |
+| Harness / `:8080` not up yet | User-data still installing Docker, or container not started | `./scripts/demo.sh status`; wait; see `harness` for re-pull |
+| Bucket name rejected | Suffix not `--apse2-az1--x-s3` | Follow `base--zone-id--x-s3` exactly |
+| Hook / agent blocked mutating AWS CLI | Guard env unset | Export `S3X_LAB_ALLOW_AWS=1` as the operator (Kiro `guard-aws-mutations`) |
+| Profile / account surprise | Implicit credentials | Always `AWS_PROFILE=sandbox` and `AWS_REGION=ap-southeast-2` |
+| No ECR image on `demo.sh up` | Image pipeline not built | `./scripts/image.sh up && ./scripts/image.sh build` first |
+
+## Quick checks
+
+```bash frame="terminal"
+export AWS_PROFILE=sandbox
+export AWS_REGION=ap-southeast-2
+
+aws ec2 describe-availability-zones --zone-ids apse2-az1
+aws ec2 describe-vpc-endpoints \
+  --filters Name=service-name,Values=com.amazonaws.ap-southeast-2.s3express
+aws ssm get-connection-status \
+  --target "$(jq -r .instanceId .lab-state.json)"
+./scripts/demo.sh status
+```
+
+## References
+
+- [S3 Express Regions and Zones](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-Regions-and-Zones.html)
+- [Directory bucket AZ networking](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-az-networking.html)
+- [Endpoints for directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/endpoint-directory-buckets-AZ.html)
+- [Authenticating and authorizing](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-authenticating-authorizing.html)
+- [IAM for S3 Express](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-security-iam.html)
+- [Using tags with directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-buckets-tagging.html)
+- [Creating directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-create.html)
+- [Session Manager instance profile](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-getting-started-instance-profile.html)
+- [Install the Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)

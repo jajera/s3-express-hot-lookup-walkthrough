@@ -1,0 +1,79 @@
+---
+title: Costs and limits
+description: What bills until deleted, single-AZ durability, and directory bucket constraints.
+sidebar:
+  label: Costs and limits
+---
+
+import { Aside } from "@astrojs/starlight/components";
+import Checklist from "@/components/Checklist.astro";
+import Tooltip from "@/components/Tooltip.astro";
+
+<Checklist
+  id="ref-costs"
+  items={[
+    "Know what keeps billing until deleted",
+  ]}
+/>
+
+## Overview
+
+Do not hardcode per-GB or hourly rates — they age. Link pricing pages. The usual surprise is an
+<code>m7g.large</code> left running; objects and public IPv4 also bill until cleaned up.
+
+## Billing reminders
+
+| Resource | Stops billing when |
+| -------- | ------------------ |
+| EC2 `m7g.large` | Terminated (main hourly cost) |
+| Public IPv4 on the instance | Instance terminated (or address released) |
+| EBS root volume | Deleted with the instance (or separately) |
+| Standard + Express objects | Deleted |
+| Directory / Standard buckets | Deleted after empty |
+| Gateway VPC endpoints | Deleted (no NAT in this lab) |
+| IAM roles / instance profiles | Free — delete to avoid leftover permissions |
+| ECR images / CodeBuild | Not removed by `demo.sh down` — run `image.sh down` too ([Tear down](/cli/teardown/)) |
+
+See [S3 pricing](https://aws.amazon.com/s3/pricing/) and
+[EC2 On-Demand pricing](https://aws.amazon.com/ec2/pricing/on-demand/).
+
+Lab default opens TCP **8080** to `0.0.0.0/0`. Prefer
+[SSM port-forward](/cli/dashboard/) for local viewing when you do not need a public dash.
+
+## Single-AZ durability
+
+<Tooltip term="s3-express" label="S3 Express One Zone" /> stores data redundantly **within one
+Availability Zone**. That is by design for latency — not multi-AZ durability like Standard.
+Use it for regenerable or explicitly single-AZ hot data, not as a sole copy of irreplaceable
+archives. See [Where Express fits](/guidance/where-express-fits/).
+
+## Directory bucket limits (high level)
+
+| Constraint | Detail |
+| ---------- | ------ |
+| Naming | `base--zone-id--x-s3` (lab: `--apse2-az1--x-s3`) |
+| Location | Single AZ; Sydney Express AZ ID is `apse2-az1` only |
+| Auth for zonal ops | <Tooltip term="create-session" label="CreateSession" /> |
+| Networking | Same-AZ compute + gateway endpoints `s3` **and** `s3express` |
+| Tagging | `s3control TagResource` (not `s3api put-bucket-tagging`) |
+| Sync | `aws s3 sync` is rejected — use `aws s3 cp --recursive` |
+| Feature parity | Not every general-purpose S3 feature applies |
+
+Exact request-rate and quota numbers belong on the AWS docs — re-read them rather than copying
+numbers that may change.
+
+<Aside type="caution">
+  Leaving <code>m7g.large</code> running overnight is the usual surprise bill. Tear down before
+  you walk away — <code>demo.sh down</code> then <code>image.sh down</code> (lab first, image
+  stack second).
+</Aside>
+
+## References
+
+- [S3 pricing](https://aws.amazon.com/s3/pricing/)
+- [EC2 On-Demand pricing](https://aws.amazon.com/ec2/pricing/on-demand/)
+- [S3 Express One Zone](https://aws.amazon.com/s3/storage-classes/express-one-zone/)
+- [Differences for directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-differences.html)
+- [Using tags with directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-buckets-tagging.html)
+- [S3 Express Regions and Zones](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-Regions-and-Zones.html)
+- [High-performance directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-high-performance.html)

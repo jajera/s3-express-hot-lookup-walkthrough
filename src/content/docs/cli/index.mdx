@@ -1,0 +1,123 @@
+---
+title: CLI walkthrough
+description: Reading order and demo.sh cheat sheet for the S3 Express hot lookup lab.
+sidebar:
+  label: CLI overview
+---
+
+import { Aside, LinkCard, CardGrid } from "@astrojs/starlight/components";
+import Checklist from "@/components/Checklist.astro";
+
+<Checklist
+  id="cli-overview"
+  items={[
+    "Know the reading order",
+    "Know the demo.sh subcommands",
+  ]}
+/>
+
+## Overview
+
+Work the pages in order. Each page shows the AWS CLI first, then the matching
+`scripts/demo.sh` subcommand. The script echoes every command before it runs — it teaches, it
+does not hide.
+
+## Reading order
+
+1. [Install tooling](/install-tooling/) — AWS CLI ≥ 2.15.0 (latest fine)
+2. [Prerequisites](/prerequisites/) — account, profile, Region, Express AZ
+3. [Architecture](/architecture/) — what you are building
+4. Then the walkthrough pages below
+
+<CardGrid>
+  <LinkCard title="1. Build harness image" href="/cli/setup/image/" />
+  <LinkCard title="2. Create the VPC" href="/cli/setup/vpc/" />
+  <LinkCard title="3. Create the buckets" href="/cli/setup/buckets/" />
+  <LinkCard title="4. IAM and EC2" href="/cli/setup/iam-and-ec2/" />
+  <LinkCard title="5. Seed and run harness" href="/cli/harness/" />
+  <LinkCard title="6. Read the dashboard" href="/cli/dashboard/" />
+  <LinkCard title="7. Tear down" href="/cli/teardown/" />
+  <LinkCard title="After: Where Express fits" href="/guidance/where-express-fits/" />
+</CardGrid>
+
+## Lab suffix (`LAB_SUFFIX`)
+
+Every resource name includes a short unique suffix so `down` only touches this lab run.
+
+| Item | Value |
+| ---- | ----- |
+| Env var | `LAB_SUFFIX` |
+| Used in names | `s3x-hotlookup-${LAB_SUFFIX}-…`, directory bucket `s3x-hotlookup-${LAB_SUFFIX}--apse2-az1--x-s3` |
+| If unset for `demo.sh up` | Auto-set to `$(date +%Y%m%d%H%M%S)` and stored in `.lab-state.json` |
+| Manual CLI pages | You **must** export it yourself before copying commands |
+
+```bash frame="terminal"
+export AWS_PROFILE=sandbox
+export AWS_REGION=ap-southeast-2
+# pick one durable value for this run, or generate:
+export LAB_SUFFIX=$(date +%Y%m%d%H%M%S)
+# example result: 20260920105100
+```
+
+In code samples, `$LAB_SUFFIX` is that value — not the literal string `SUFFIX`.
+
+## `demo.sh` cheat sheet
+
+```bash frame="terminal"
+export AWS_PROFILE=sandbox
+export AWS_REGION=ap-southeast-2
+# optional — omit to let up generate one:
+# export LAB_SUFFIX=$(date +%Y%m%d%H%M%S)
+
+./scripts/image.sh up        # once: ECR + CodeBuild (durable)
+./scripts/image.sh build     # push s3x-hotlookup-harness:tag
+./scripts/demo.sh up         # VPC, endpoints, buckets, IAM, EC2 (pulls image)
+./scripts/demo.sh status     # read-only
+./scripts/demo.sh seed       # put bakeoff keys into both buckets
+./scripts/demo.sh harness    # how to rebuild image / re-pull
+./scripts/demo.sh dash       # print public dashboard URL (:8080)
+./scripts/demo.sh port-forward  # SSM tunnel → http://127.0.0.1:8080/
+./scripts/demo.sh down       # type LAB_SUFFIX — lab resources
+./scripts/image.sh down      # type s3x-hotlookup-harness — remove everything else
+```
+
+| Subcommand | Mutates? | Notes |
+| ---------- | -------- | ----- |
+| `image.sh up` | yes | Durable ECR + CodeBuild; not removed by `demo.sh down` |
+| `image.sh build` | yes | CodeBuild → ECR push |
+| `demo.sh up` | yes | Sets `LAB_SUFFIX` if missing; pulls harness from ECR; writes `.lab-state.json` |
+| `demo.sh status` | no | Safe any time |
+| `demo.sh seed` | yes | Writes identical hot keys to Express + Standard |
+| `demo.sh harness` | no | Prints rebuild / re-pull guidance |
+| `demo.sh dash` | no | Prints the public dashboard URL on port 8080 |
+| `demo.sh port-forward` | no | SSM port-forward to `http://127.0.0.1:8080/` (needs Session Manager plugin) |
+| `demo.sh down` | yes | Confirms by typing the stored `LAB_SUFFIX` (lab only) |
+| `image.sh down` | yes | Confirms by typing `s3x-hotlookup-harness` — required to remove everything |
+
+<Aside type="caution">
+  Authoring agents must not run mutating AWS CLI calls. Operators set
+  <code>S3X_LAB_ALLOW_AWS=1</code> deliberately for a live lab run.
+</Aside>
+
+## Conventions
+
+| Convention | Value |
+| ---------- | ----- |
+| Profile | `AWS_PROFILE=sandbox` |
+| Suffix | `LAB_SUFFIX` (timestamp or your choice) |
+| Name prefix | `s3x-hotlookup-${LAB_SUFFIX}-…` |
+| Tag | `Project=s3-express-hot-lookup-walkthrough` |
+| Default Region | `ap-southeast-2` |
+| Express AZ ID | `apse2-az1` |
+| AWS CLI | Minimum **2.15.0** (latest v2 recommended) |
+| Mutation guard | `S3X_LAB_ALLOW_AWS=1` |
+| Local artifacts | `.lab/` (gitignored) |
+| Lab state | `.lab-state.json` (gitignored) — written by `demo.sh` |
+| Image state | `.image-state.json` (gitignored) — written by `image.sh` |
+| ECR repo | `s3x-hotlookup-harness` |
+
+## References
+
+- [High-performance directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-high-performance.html)
+- [Creating directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-create.html)
+- [S3 Express Regions and Zones](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-Regions-and-Zones.html)

@@ -1,0 +1,244 @@
+---
+title: Create the buckets
+description: Create a Standard bakeoff bucket and an Express directory bucket named with --apse2-az1--x-s3.
+sidebar:
+  label: Create the buckets
+---
+
+import { Steps, Aside } from "@astrojs/starlight/components";
+import Checklist from "@/components/Checklist.astro";
+import Tooltip from "@/components/Tooltip.astro";
+import buckets from "@/assets/diagrams/buckets.svg";
+
+<Checklist
+  id="setup-buckets"
+  items={[
+    "Standard general-purpose bucket exists",
+    "Directory bucket named with --apse2-az1--x-s3",
+    "Both buckets tagged with the lab Project tag",
+  ]}
+/>
+
+## Overview
+
+Two buckets in `ap-southeast-2` — a **Standard** general-purpose bucket (baseline) and a
+<Tooltip term="directory-bucket" /> for <Tooltip term="s3-express" label="S3 Express One Zone" />.
+Directory names follow `bucket-base-name--zone-id--x-s3`; this lab uses AZ ID `apse2-az1` only.
+
+<figure>
+  <img src={buckets.src} alt="Side by side in ap-southeast-2: a Standard general-purpose bucket (regional, SigV4, s3api put-bucket-tagging) and an Express directory bucket (single AZ apse2-az1, name ending --apse2-az1--x-s3, CreateSession auth, tags via s3control TagResource). Identical hot keys are seeded to both for the bakeoff." />
+</figure>
+
+| Bucket | Naming |
+| ------ | ------ |
+| Standard | `s3x-hotlookup-${LAB_SUFFIX}-${ACCOUNT_ID}` |
+| Directory | `s3x-hotlookup-${LAB_SUFFIX}--apse2-az1--x-s3` |
+
+<Aside type="caution">
+  S3 storage and request charges apply until you empty and delete both buckets. See
+  <a href="https://aws.amazon.com/s3/pricing/">S3 pricing</a> rather than hardcoding rates.
+</Aside>
+
+## Steps
+
+Reuse the same `LAB_SUFFIX` as the VPC. Run from the **repo root**.
+
+```bash frame="terminal"
+export AWS_PROFILE=sandbox
+export AWS_REGION=ap-southeast-2
+export S3X_LAB_ALLOW_AWS=1
+export LAB_SUFFIX=${LAB_SUFFIX:-$(date +%Y%m%d%H%M%S)}
+export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export STD_BUCKET="s3x-hotlookup-${LAB_SUFFIX}-${ACCOUNT_ID}"
+export DIR_BUCKET="s3x-hotlookup-${LAB_SUFFIX}--apse2-az1--x-s3"
+echo "STD_BUCKET=${STD_BUCKET}"
+echo "DIR_BUCKET=${DIR_BUCKET}"
+```
+
+Looks like (verified shape; suffix and account are yours):
+
+```text
+STD_BUCKET=s3x-hotlookup-EXAMPLE-123456789012
+DIR_BUCKET=s3x-hotlookup-EXAMPLE--apse2-az1--x-s3
+```
+
+<Steps>
+
+1. Create the Standard general-purpose bucket.
+
+   ```bash frame="terminal"
+   aws s3api create-bucket \
+     --bucket "$STD_BUCKET" \
+     --create-bucket-configuration "LocationConstraint=${AWS_REGION}"
+   ```
+
+   Looks like (verified shape):
+
+   ```json
+   {
+     "Location": "<standard regional endpoint URL for STD_BUCKET>",
+     "BucketArn": "arn:aws:s3:::s3x-hotlookup-EXAMPLE-123456789012"
+   }
+   ```
+
+2. Tag the Standard bucket with the lab Project tag.
+
+   ```bash frame="terminal"
+   aws s3api put-bucket-tagging \
+     --bucket "$STD_BUCKET" \
+     --tagging 'TagSet=[{Key=Project,Value=s3-express-hot-lookup-walkthrough}]'
+   ```
+
+   Looks like: no stdout on success (exit 0).
+
+3. Create the directory bucket with `Location Type=AvailabilityZone`.
+
+   ```bash frame="terminal"
+   aws s3api create-bucket \
+     --bucket "$DIR_BUCKET" \
+     --create-bucket-configuration '{
+       "Location": {
+         "Type": "AvailabilityZone",
+         "Name": "apse2-az1"
+       },
+       "Bucket": {
+         "DataRedundancy": "SingleAvailabilityZone",
+         "Type": "Directory"
+       }
+     }' \
+     --region "$AWS_REGION"
+   ```
+
+   Looks like (verified shape):
+
+   ```json
+   {
+     "Location": "<zonal Express endpoint URL for DIR_BUCKET>",
+     "BucketArn": "arn:aws:s3express:ap-southeast-2:123456789012:bucket/s3x-hotlookup-EXAMPLE--apse2-az1--x-s3"
+   }
+   ```
+
+   <Aside type="tip">
+     The name suffix <code>--apse2-az1--x-s3</code> must match the AZ ID in
+     <code>Location.Name</code>. Do not invent a second Sydney Express AZ — only
+     <code>apse2-az1</code> is supported.
+   </Aside>
+
+4. Tag the directory bucket (S3 Control `TagResource` — classic
+   `put-bucket-tagging` is not supported on directory buckets).
+
+   ```bash frame="terminal"
+   aws s3control tag-resource \
+     --account-id "$ACCOUNT_ID" \
+     --resource-arn "arn:aws:s3express:${AWS_REGION}:${ACCOUNT_ID}:bucket/${DIR_BUCKET}" \
+     --tags Key=Project,Value=s3-express-hot-lookup-walkthrough
+   ```
+
+   Looks like: no stdout on success (exit 0).
+
+</Steps>
+
+### Prefer the wrapper
+
+`demo.sh up` creates both buckets (plus VPC, IAM, and EC2) after the harness image from
+[Build harness image](/cli/setup/image/):
+
+```bash frame="terminal"
+export S3X_LAB_ALLOW_AWS=1
+./scripts/demo.sh up
+```
+
+## Verify
+
+1. Standard bucket location and tags.
+
+   ```bash frame="terminal"
+   aws s3api get-bucket-location --bucket "$STD_BUCKET"
+   aws s3api get-bucket-tagging --bucket "$STD_BUCKET"
+   ```
+
+   Looks like (verified):
+
+   ```json
+   {
+     "LocationConstraint": "ap-southeast-2"
+   }
+   ```
+
+   ```json
+   {
+     "TagSet": [
+       {
+         "Key": "Project",
+         "Value": "s3-express-hot-lookup-walkthrough"
+       }
+     ]
+   }
+   ```
+
+2. Directory bucket head and tags.
+
+   ```bash frame="terminal"
+   aws s3api head-bucket --bucket "$DIR_BUCKET"
+   aws s3control list-tags-for-resource \
+     --account-id "$ACCOUNT_ID" \
+     --resource-arn "arn:aws:s3express:${AWS_REGION}:${ACCOUNT_ID}:bucket/${DIR_BUCKET}"
+   ```
+
+   Looks like (verified shape):
+
+   ```json
+   {
+     "BucketArn": "arn:aws:s3express:ap-southeast-2:123456789012:bucket/s3x-hotlookup-EXAMPLE--apse2-az1--x-s3",
+     "BucketLocationType": "AvailabilityZone",
+     "BucketLocationName": "apse2-az1",
+     "BucketRegion": "ap-southeast-2",
+     "AccessPointAlias": false
+   }
+   ```
+
+   ```json
+   {
+     "Tags": [
+       {
+         "Key": "Project",
+         "Value": "s3-express-hot-lookup-walkthrough"
+       }
+     ]
+   }
+   ```
+
+3. Print ARNs.
+
+   ```bash frame="terminal"
+   echo "arn:aws:s3:::${STD_BUCKET}"
+   echo "arn:aws:s3express:${AWS_REGION}:${ACCOUNT_ID}:bucket/${DIR_BUCKET}"
+   ```
+
+   Looks like (verified shape):
+
+   ```text
+   arn:aws:s3:::s3x-hotlookup-EXAMPLE-123456789012
+   arn:aws:s3express:ap-southeast-2:123456789012:bucket/s3x-hotlookup-EXAMPLE--apse2-az1--x-s3
+   ```
+
+| Check | Expect |
+| ----- | ------ |
+| Standard location | `ap-southeast-2` |
+| Directory name | ends with `--apse2-az1--x-s3` |
+| Directory location | `AvailabilityZone` / `apse2-az1` |
+| Tag (Standard) | `s3api get-bucket-tagging` → `Project=…` |
+| Tag (directory) | `s3control list-tags-for-resource` → `Project=…` |
+
+## Next
+
+Continue to [IAM and EC2](/cli/setup/iam-and-ec2/).
+
+## References
+
+- [Creating directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-create.html)
+- [High-performance directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-high-performance.html)
+- [Using tags with directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-buckets-tagging.html)
+- [S3 Express Regions and Zones](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-Regions-and-Zones.html)
+- [Differences for directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-differences.html)
+- [S3 pricing](https://aws.amazon.com/s3/pricing/)

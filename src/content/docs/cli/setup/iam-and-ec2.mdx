@@ -1,0 +1,381 @@
+---
+title: IAM and EC2
+description: CreateSession IAM, instance profile, m7g.large in apse2-az1, and user-data bootstrap for the harness.
+sidebar:
+  label: IAM and EC2
+---
+
+import { Steps, Aside } from "@astrojs/starlight/components";
+import Checklist from "@/components/Checklist.astro";
+import Tooltip from "@/components/Tooltip.astro";
+import iamec2 from "@/assets/diagrams/iam-and-ec2.svg";
+
+<Checklist
+  id="setup-iam-ec2"
+  items={[
+    "Instance role allows CreateSession, Standard S3, ECR pull, and SSM",
+    "Instance profile attached",
+    "m7g.large running in the Express AZ with harness on :8080",
+  ]}
+/>
+
+## Overview
+
+An <code>m7g.large</code> (arm64 / Graviton) in the same AZ as the directory bucket, with an
+instance profile scoped to four grants: <Tooltip term="create-session" label="s3express:CreateSession" />
+on the directory bucket, S3 read/write on the Standard bucket, ECR pull so user-data can start the
+<Tooltip term="harness" /> image, and <code>AmazonSSMManagedInstanceCore</code> for Session Manager.
+
+<figure>
+  <img src={iamec2.src} alt="An m7g.large in the public subnet (apse2-az1) assumes an instance profile whose IAM role grants s3express:CreateSession on the directory bucket, s3:Get/Put/List on the Standard bucket, ECR pull for the harness image, and AmazonSSMManagedInstanceCore for Session Manager. User-data pulls the image at boot and runs the harness on :8080." />
+</figure>
+
+| Setting | Value |
+| ------- | ----- |
+| Role | `s3x-hotlookup-${LAB_SUFFIX}-ec2` |
+| Instance profile | `s3x-hotlookup-${LAB_SUFFIX}-profile` |
+| Instance type | `m7g.large` |
+| AMI | AL2023 arm64 (`al2023-ami-kernel-default-arm64`) |
+
+<Aside type="caution">
+  <code>m7g.large</code> is billable On-Demand until you terminate it. See
+  <a href="https://aws.amazon.com/ec2/pricing/on-demand/">EC2 On-Demand pricing</a>.
+</Aside>
+
+## Steps
+
+Reuse `LAB_SUFFIX`, `$VPC_ID`, `$SUBNET_ID`, `$AZ_NAME`, and bucket names from earlier pages.
+Requires a harness image from [Build harness image](/cli/setup/image/). Run from the **repo root**.
+
+```bash frame="terminal"
+export AWS_PROFILE=sandbox
+export AWS_REGION=ap-southeast-2
+export S3X_LAB_ALLOW_AWS=1
+export LAB_SUFFIX=${LAB_SUFFIX:-$(date +%Y%m%d%H%M%S)}
+export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export ROLE_NAME="s3x-hotlookup-${LAB_SUFFIX}-ec2"
+export PROFILE_NAME="s3x-hotlookup-${LAB_SUFFIX}-profile"
+export STD_BUCKET="s3x-hotlookup-${LAB_SUFFIX}-${ACCOUNT_ID}"
+export DIR_BUCKET="s3x-hotlookup-${LAB_SUFFIX}--apse2-az1--x-s3"
+export HARNESS_IMAGE="$(jq -r '.ecrUri + ":" + .imageTag' .image-state.json)"
+export HARNESS_PORT=8080
+mkdir -p .lab
+echo "ROLE_NAME=${ROLE_NAME}"
+echo "HARNESS_IMAGE=${HARNESS_IMAGE}"
+```
+
+Looks like (verified shape):
+
+```text
+ROLE_NAME=s3x-hotlookup-EXAMPLE-ec2
+HARNESS_IMAGE=123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/s3x-hotlookup-harness:c3cad1d
+```
+
+### IAM role and instance profile
+
+<Steps>
+
+1. Write the EC2 trust policy.
+
+   ```bash frame="terminal"
+   cat > .lab/ec2-trust.json <<'EOF'
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Principal": { "Service": "ec2.amazonaws.com" },
+         "Action": "sts:AssumeRole"
+       }
+     ]
+   }
+   EOF
+   ```
+
+   Looks like: file `.lab/ec2-trust.json` created (no AWS stdout).
+
+2. Write the permissions policy (CreateSession, Standard S3, ECR pull).
+
+   ```bash frame="terminal"
+   cat > .lab/ec2-perms.json <<EOF
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Sid": "StandardBucket",
+         "Effect": "Allow",
+         "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
+         "Resource": [
+           "arn:aws:s3:::${STD_BUCKET}",
+           "arn:aws:s3:::${STD_BUCKET}/*"
+         ]
+       },
+       {
+         "Sid": "ExpressCreateSession",
+         "Effect": "Allow",
+         "Action": "s3express:CreateSession",
+         "Resource": "arn:aws:s3express:${AWS_REGION}:${ACCOUNT_ID}:bucket/${DIR_BUCKET}"
+       },
+       {
+         "Sid": "EcrAuth",
+         "Effect": "Allow",
+         "Action": ["ecr:GetAuthorizationToken"],
+         "Resource": "*"
+       },
+       {
+         "Sid": "EcrPull",
+         "Effect": "Allow",
+         "Action": [
+           "ecr:BatchCheckLayerAvailability",
+           "ecr:GetDownloadUrlForLayer",
+           "ecr:BatchGetImage"
+         ],
+         "Resource": "arn:aws:ecr:${AWS_REGION}:${ACCOUNT_ID}:repository/s3x-hotlookup-harness"
+       }
+     ]
+   }
+   EOF
+   ```
+
+   Looks like: file `.lab/ec2-perms.json` created (no AWS stdout).
+
+3. Create the IAM role.
+
+   ```bash frame="terminal"
+   aws iam create-role \
+     --role-name "$ROLE_NAME" \
+     --assume-role-policy-document file://.lab/ec2-trust.json \
+     --tags Key=Project,Value=s3-express-hot-lookup-walkthrough \
+     --query 'Role.Arn' --output text
+   ```
+
+   Looks like (verified shape):
+
+   ```text
+   arn:aws:iam::123456789012:role/s3x-hotlookup-EXAMPLE-ec2
+   ```
+
+4. Attach the inline S3 / Express / ECR policy.
+
+   ```bash frame="terminal"
+   aws iam put-role-policy \
+     --role-name "$ROLE_NAME" \
+     --policy-name s3x-hotlookup-s3 \
+     --policy-document file://.lab/ec2-perms.json
+   ```
+
+   Looks like: no stdout on success (exit 0).
+
+5. Attach `AmazonSSMManagedInstanceCore` so Session Manager can reach the instance
+   (AL2023 already includes SSM Agent).
+
+   ```bash frame="terminal"
+   aws iam attach-role-policy \
+     --role-name "$ROLE_NAME" \
+     --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+   ```
+
+   Looks like: no stdout on success (exit 0).
+
+6. Create the instance profile and add the role.
+
+   ```bash frame="terminal"
+   aws iam create-instance-profile --instance-profile-name "$PROFILE_NAME" \
+     --query 'InstanceProfile.Arn' --output text
+
+   aws iam add-role-to-instance-profile \
+     --instance-profile-name "$PROFILE_NAME" \
+     --role-name "$ROLE_NAME"
+
+   # IAM consistency delay before RunInstances
+   sleep 8
+   ```
+
+   Looks like (verified shape for the profile ARN; add-role and sleep are silent):
+
+   ```text
+   arn:aws:iam::123456789012:instance-profile/s3x-hotlookup-EXAMPLE-profile
+   ```
+
+</Steps>
+
+### Security group and instance
+
+<Steps>
+
+1. Create a security group that allows the harness dashboard on TCP 8080.
+
+   ```bash frame="terminal"
+   export SG_ID=$(aws ec2 create-security-group \
+     --group-name "s3x-hotlookup-${LAB_SUFFIX}-sg" \
+     --description "S3 Express hot lookup harness" \
+     --vpc-id "$VPC_ID" \
+     --tag-specifications "ResourceType=security-group,Tags=[{Key=Name,Value=s3x-hotlookup-${LAB_SUFFIX}},{Key=Project,Value=s3-express-hot-lookup-walkthrough}]" \
+     --query 'GroupId' --output text)
+   echo "$SG_ID"
+
+   aws ec2 authorize-security-group-ingress \
+     --group-id "$SG_ID" \
+     --ip-permissions "IpProtocol=tcp,FromPort=8080,ToPort=8080,IpRanges=[{CidrIp=0.0.0.0/0,Description=harness-dash}]"
+   ```
+
+   Looks like (verified shape; authorize is silent on success):
+
+   ```text
+   sg-060230f0fd0150847
+   ```
+
+2. Resolve the latest AL2023 **arm64** AMI.
+
+   ```bash frame="terminal"
+   export AMI_ID=$(aws ssm get-parameters \
+     --names /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64 \
+     --query 'Parameters[0].Value' --output text)
+   echo "$AMI_ID"
+   ```
+
+   Looks like (verified in this lab; AMI ID rotates over time):
+
+   ```text
+   ami-03f010f33dadbdb73
+   ```
+
+3. Write user-data that installs Docker, pulls the harness from ECR, and runs it.
+
+   ```bash frame="terminal"
+   cat > .lab/user-data.sh <<EOF
+   #!/bin/bash
+   set -euo pipefail
+   exec > >(tee /var/log/s3x-harness-bootstrap.log) 2>&1
+
+   dnf -y update
+   dnf -y install docker
+   systemctl enable --now docker
+
+   REGION='${AWS_REGION}'
+   ACCOUNT_ID='${ACCOUNT_ID}'
+   STANDARD_BUCKET='${STD_BUCKET}'
+   EXPRESS_BUCKET='${DIR_BUCKET}'
+   HARNESS_PORT='${HARNESS_PORT}'
+   OBJECT_COUNT='64'
+   OBJECT_PREFIX='hot/'
+   HARNESS_IMAGE='${HARNESS_IMAGE}'
+   ECR_REGISTRY="\${ACCOUNT_ID}.dkr.ecr.\${REGION}.amazonaws.com"
+
+   aws ecr get-login-password --region "\$REGION" \\
+     | docker login --username AWS --password-stdin "\$ECR_REGISTRY"
+
+   docker pull "\$HARNESS_IMAGE"
+   docker rm -f s3x-harness 2>/dev/null || true
+   docker run -d --name s3x-harness --restart unless-stopped \\
+     -p "\${HARNESS_PORT}:8080" \\
+     -e AWS_REGION="\$REGION" \\
+     -e AWS_DEFAULT_REGION="\$REGION" \\
+     -e EXPRESS_BUCKET="\$EXPRESS_BUCKET" \\
+     -e STANDARD_BUCKET="\$STANDARD_BUCKET" \\
+     -e OBJECT_COUNT="\$OBJECT_COUNT" \\
+     -e OBJECT_PREFIX="\$OBJECT_PREFIX" \\
+     "\$HARNESS_IMAGE"
+
+   echo bootstrap-complete
+   EOF
+   ```
+
+   Looks like: file `.lab/user-data.sh` created (no AWS stdout).
+
+4. Launch `m7g.large` in the Express AZ subnet with the instance profile.
+
+   ```bash frame="terminal"
+   export INSTANCE_ID=$(aws ec2 run-instances \
+     --image-id "$AMI_ID" \
+     --instance-type m7g.large \
+     --subnet-id "$SUBNET_ID" \
+     --security-group-ids "$SG_ID" \
+     --iam-instance-profile "Name=${PROFILE_NAME}" \
+     --user-data file://.lab/user-data.sh \
+     --metadata-options "HttpTokens=required,HttpPutResponseHopLimit=2,HttpEndpoint=enabled" \
+     --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=s3x-hotlookup-${LAB_SUFFIX}},{Key=Project,Value=s3-express-hot-lookup-walkthrough}]" \
+     --query 'Instances[0].InstanceId' --output text)
+   echo "$INSTANCE_ID"
+
+   aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+
+   export PUBLIC_IP=$(aws ec2 describe-instances \
+     --instance-ids "$INSTANCE_ID" \
+     --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+   echo "Dashboard http://${PUBLIC_IP}:${HARNESS_PORT}/"
+   ```
+
+   Looks like (verified shape; public IP is yours):
+
+   ```text
+   i-07ab082c03100fc5a
+   Dashboard http://203.0.113.10:8080/
+   ```
+
+</Steps>
+
+### Prefer the wrapper
+
+`demo.sh up` creates IAM, the security group, seeds both buckets, and launches EC2 after the
+image and VPC exist:
+
+```bash frame="terminal"
+export S3X_LAB_ALLOW_AWS=1
+./scripts/demo.sh up
+./scripts/demo.sh status
+```
+
+## Verify
+
+```bash frame="terminal"
+aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+  --query 'Reservations[0].Instances[0].{State:State.Name,AZ:Placement.AvailabilityZone,Type:InstanceType,Arch:Architecture,Profile:IamInstanceProfile.Arn}'
+curl -s -o /dev/null -w '%{http_code}\n' --connect-timeout 5 \
+  "http://${PUBLIC_IP}:${HARNESS_PORT}/healthz"
+aws ssm get-connection-status --target "$INSTANCE_ID"
+```
+
+Looks like (verified; AZ is account-local):
+
+```json
+{
+  "State": "running",
+  "AZ": "ap-southeast-2b",
+  "Type": "m7g.large",
+  "Arch": "arm64",
+  "Profile": "arn:aws:iam::123456789012:instance-profile/s3x-hotlookup-EXAMPLE-profile"
+}
+```
+
+```text
+200
+```
+
+```json
+{
+  "Target": "i-EXAMPLE",
+  "Status": "connected"
+}
+```
+
+| Check | Expect |
+| ----- | ------ |
+| State | `running` |
+| Type / arch | `m7g.large` / `arm64` |
+| AZ | Same mapping as `apse2-az1` (`ap-southeast-2b` in this lab) |
+| Profile | Lab instance profile attached |
+| `/healthz` | `200` after bootstrap (a few minutes) |
+| Session Manager | `connected` (reboot once if you attached SSM after launch) |
+
+## Next
+
+Continue to [Seed and run harness](/cli/harness/).
+
+## References
+
+- [Authenticating and authorizing with S3 Express](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-authenticating-authorizing.html)
+- [IAM for S3 Express](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-security-iam.html)
+- [Directory bucket AZ networking](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-az-networking.html)
+- [Session Manager instance profile](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-getting-started-instance-profile.html)
+- [EC2 On-Demand pricing](https://aws.amazon.com/ec2/pricing/on-demand/)

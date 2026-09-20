@@ -1,0 +1,79 @@
+---
+title: S3 Express Hot Lookup Walkthrough
+description: Guided CLI lab for Amazon S3 Express One Zone shared hot lookup — same-AZ bakeoff vs Standard with a built-in harness dashboard.
+template: splash
+hero:
+  tagline: Amazon S3 Express One Zone keeps hot objects in one AZ next to compute — this lab shows how that fits shared hot lookup versus S3 Standard.
+  actions:
+    - text: Get Started
+      link: /install-tooling/
+      icon: right-arrow
+      variant: primary
+---
+
+import { Card, CardGrid, Aside } from "@astrojs/starlight/components";
+import Tooltip from "@/components/Tooltip.astro";
+import hotLookup from "@/assets/diagrams/hot-lookup.svg";
+
+## Why this exists
+
+Many services share a small set of keys that clients read constantly —
+feature flags, pricing tables, session metadata. That is a
+<Tooltip term="shared-hot-lookup" label="shared hot lookup" /> pattern: latency
+and consistency matter more than multi-AZ durability for those hot objects.
+
+<Tooltip term="s3-express" label="S3 Express One Zone" /> puts object storage
+in a single Availability Zone next to your compute. You use a
+<Tooltip term="directory-bucket" /> and session-based
+<Tooltip term="create-session" label="CreateSession" /> auth so zonal GETs stay
+in the single-digit millisecond range when the client is co-located.
+
+<figure>
+  <img src={hotLookup.src} alt="Same-AZ shared hot lookup: an m7g.large harness in a public subnet (apse2-az1) GETs identical hot keys from an Express directory bucket via CreateSession and from a Standard general-purpose bucket as the bakeoff baseline." />
+</figure>
+
+| | Standard general purpose | This lab (Express) |
+| --- | --- | --- |
+| Latency target | Good for most apps | Single-digit ms GET/PUT when same-AZ |
+| Durability model | Multi-AZ | Single AZ (by design) |
+| Auth for object ops | SigV4 as usual | CreateSession then zonal ops |
+| Networking | Regional S3 endpoint | Regional + `s3express` gateway endpoint |
+
+## What you will do
+
+<CardGrid>
+  <Card title="Create a dedicated VPC" icon="rocket">
+    CIDR <code>10.87.0.0/16</code>, public subnet in the AZ that maps to
+    <Tooltip term="az-id" label="apse2-az1" />, IGW, and both S3
+    <Tooltip term="gateway-endpoint" label="gateway endpoints" />.
+  </Card>
+  <Card title="Create the buckets" icon="seti:folder">
+    Express directory bucket plus a Standard general-purpose bucket for the
+    bakeoff.
+  </Card>
+  <Card title="IAM, EC2, and harness" icon="seti:docker">
+    Instance profile with CreateSession, <code>m7g.large</code> in that AZ,
+    seed keys, then run the <Tooltip term="harness" /> on <code>:8080</code>.
+  </Card>
+  <Card title="Read the dash, then tear down" icon="close">
+    Compare p50/p90 ratios, then remove <strong>everything</strong> —
+    <code>./scripts/demo.sh down</code> and <code>./scripts/image.sh down</code>.
+  </Card>
+</CardGrid>
+
+| Expectation | Notes |
+| ----------- | ----- |
+| Lab length | Under an hour once tooling is ready (verified this account) |
+| Express AZ | Sydney has one Express AZ ID: `apse2-az1` |
+| Cost | Billable until lab **and** image stack are deleted |
+
+<Aside type="caution">
+  This lab creates billable AWS resources — especially an <code>m7g.large</code>
+  instance. Tear down when you are done.
+</Aside>
+
+## References
+
+- [High-performance directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-high-performance.html)
+- [S3 Express One Zone](https://aws.amazon.com/s3/storage-classes/express-one-zone/)
+- [Regions and Zones](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-Regions-and-Zones.html)

@@ -1,0 +1,95 @@
+---
+title: Cleanup checklist
+description: Sweep lab and image-pipeline resources so nothing billable is left behind.
+sidebar:
+  label: Cleanup checklist
+---
+
+import { Aside } from "@astrojs/starlight/components";
+import Checklist from "@/components/Checklist.astro";
+
+<Checklist
+  id="ref-cleanup"
+  items={[
+    "No lab-prefixed resources remain",
+    "Image stack removed with image.sh down",
+  ]}
+/>
+
+## Overview
+
+Run after [Tear down](/cli/teardown/) — both `./scripts/demo.sh down` **and**
+`./scripts/image.sh down`. Lab names start with `s3x-hotlookup-` (directory buckets also
+contain `--apse2-az1--x-s3`).
+
+`demo.sh down` does **not** remove the durable image stack (ECR, CodeBuild, its source bucket).
+That is a separate confirm on [Tear down](/cli/teardown/).
+
+## Lab sweep
+
+```bash frame="terminal"
+export AWS_PROFILE=sandbox
+export AWS_REGION=ap-southeast-2
+export PREFIX=s3x-hotlookup-
+
+aws ec2 describe-instances \
+  --filters "Name=tag:Project,Values=s3-express-hot-lookup-walkthrough" \
+            "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+  --query "Reservations[].Instances[].{Id:InstanceId,Name:Tags[?Key=='Name']|[0].Value}"
+
+aws s3api list-buckets --query "Buckets[?starts_with(Name, '${PREFIX}')].Name"
+
+aws ec2 describe-vpcs \
+  --filters "Name=tag:Project,Values=s3-express-hot-lookup-walkthrough" \
+  --query "Vpcs[].{Id:VpcId,Cidr:CidrBlock,Name:Tags[?Key=='Name']|[0].Value}"
+
+aws ec2 describe-vpc-endpoints \
+  --filters "Name=tag:Project,Values=s3-express-hot-lookup-walkthrough" \
+  --query "VpcEndpoints[].{Id:VpcEndpointId,Service:ServiceName,State:State}"
+
+aws ec2 describe-security-groups \
+  --filters "Name=tag:Project,Values=s3-express-hot-lookup-walkthrough" \
+  --query "SecurityGroups[].{Id:GroupId,Name:GroupName}"
+
+aws iam list-roles --query "Roles[?starts_with(RoleName, '${PREFIX}')].RoleName"
+aws iam list-instance-profiles \
+  --query "InstanceProfiles[?starts_with(InstanceProfileName, '${PREFIX}')].InstanceProfileName"
+```
+
+| Resource | Gone when |
+| -------- | --------- |
+| EC2 instance | Not running / not listed with lab tag |
+| Standard + directory buckets | Not listed (`…--apse2-az1--x-s3` for Express) |
+| VPC / subnet / IGW / SG / endpoints | Not listed with lab Project tag |
+| Role / instance profile | Not listed |
+| `.lab-state.json` | Deleted locally |
+| `.lab/` | Removed locally |
+
+## Image pipeline
+
+Required for a clean account (already covered on Tear down; re-run if you skipped it):
+
+```bash frame="terminal"
+export S3X_LAB_ALLOW_AWS=1
+./scripts/image.sh status
+./scripts/image.sh down
+```
+
+
+| Resource | Gone when |
+| -------- | --------- |
+| ECR repo `s3x-hotlookup-harness` | Deleted |
+| CodeBuild project / role / source bucket | Deleted by `image.sh down` |
+| `.image-state.json` | Deleted locally |
+
+<Aside type="caution">
+  Confirm empty results before assuming the bill stopped. Public IPv4 and EBS stop with the
+  instance; leftover buckets and ECR images keep costing storage.
+</Aside>
+
+## References
+
+- [S3 pricing](https://aws.amazon.com/s3/pricing/)
+- [EC2 On-Demand pricing](https://aws.amazon.com/ec2/pricing/on-demand/)
+- [Differences for directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-differences.html)
+- [Amazon ECR overview](https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html)

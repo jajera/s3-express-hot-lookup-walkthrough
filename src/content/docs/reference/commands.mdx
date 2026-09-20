@@ -1,0 +1,202 @@
+---
+title: Commands
+description: Lab AWS CLI and wrapper commands — naming, image pipeline, setup, seed, dash, teardown.
+sidebar:
+  label: Commands
+---
+
+import Checklist from "@/components/Checklist.astro";
+
+<Checklist
+  id="ref-commands"
+  items={[
+    "Can find any lab command from one page",
+  ]}
+/>
+
+## Overview
+
+Copy-paste index. Prefer the walkthrough pages for context. Names match `scripts/demo.sh` /
+`scripts/image.sh`.
+
+```bash frame="terminal"
+export AWS_PROFILE=sandbox
+export AWS_REGION=ap-southeast-2
+export LAB_SUFFIX=${LAB_SUFFIX:-$(date +%Y%m%d%H%M%S)}
+export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export NAME="s3x-hotlookup-${LAB_SUFFIX}"
+export STD_BUCKET="s3x-hotlookup-${LAB_SUFFIX}-${ACCOUNT_ID}"
+export DIR_BUCKET="s3x-hotlookup-${LAB_SUFFIX}--apse2-az1--x-s3"
+export ROLE_NAME="s3x-hotlookup-${LAB_SUFFIX}-ec2"
+export PROFILE_NAME="s3x-hotlookup-${LAB_SUFFIX}-profile"
+mkdir -p .lab
+```
+
+| Name | Pattern |
+| ---- | ------- |
+| Standard bucket | `s3x-hotlookup-${LAB_SUFFIX}-${ACCOUNT_ID}` |
+| Directory bucket | `s3x-hotlookup-${LAB_SUFFIX}--apse2-az1--x-s3` |
+| Role / profile | `…-ec2` / `…-profile` |
+| Tag | `Project=s3-express-hot-lookup-walkthrough` |
+
+## Image pipeline (durable)
+
+```bash frame="terminal"
+export S3X_LAB_ALLOW_AWS=1
+./scripts/image.sh up
+./scripts/image.sh build
+./scripts/image.sh status
+# when finished with the account forever:
+# ./scripts/image.sh down
+```
+
+## Setup — AZ, VPC, endpoints
+
+```bash frame="terminal"
+export AZ_NAME=$(aws ec2 describe-availability-zones \
+  --zone-ids apse2-az1 \
+  --query 'AvailabilityZones[0].ZoneName' --output text)
+
+aws ec2 create-vpc --cidr-block 10.87.0.0/16 \
+  --tag-specifications "ResourceType=vpc,Tags=[{Key=Name,Value=${NAME}-vpc},{Key=Project,Value=s3-express-hot-lookup-walkthrough}]"
+
+# … subnet in $AZ_NAME, IGW, public route, security group …
+
+aws ec2 create-vpc-endpoint \
+  --vpc-id "$VPC_ID" \
+  --service-name com.amazonaws.ap-southeast-2.s3 \
+  --route-table-ids "$RTB_ID"
+
+aws ec2 create-vpc-endpoint \
+  --vpc-id "$VPC_ID" \
+  --service-name com.amazonaws.ap-southeast-2.s3express \
+  --route-table-ids "$RTB_ID"
+```
+
+## Setup — buckets
+
+```bash frame="terminal"
+aws s3api create-bucket \
+  --bucket "$STD_BUCKET" \
+  --create-bucket-configuration "LocationConstraint=${AWS_REGION}"
+
+aws s3api put-bucket-tagging \
+  --bucket "$STD_BUCKET" \
+  --tagging "TagSet=[{Key=Project,Value=s3-express-hot-lookup-walkthrough}]"
+
+aws s3api create-bucket \
+  --bucket "$DIR_BUCKET" \
+  --create-bucket-configuration '{
+    "Location": { "Type": "AvailabilityZone", "Name": "apse2-az1" },
+    "Bucket": { "DataRedundancy": "SingleAvailabilityZone", "Type": "Directory" }
+  }' \
+  --region "$AWS_REGION"
+
+# Directory buckets: TagResource (not put-bucket-tagging)
+aws s3control tag-resource \
+  --account-id "$ACCOUNT_ID" \
+  --resource-arn "arn:aws:s3express:${AWS_REGION}:${ACCOUNT_ID}:bucket/${DIR_BUCKET}" \
+  --tags "Key=Project,Value=s3-express-hot-lookup-walkthrough"
+```
+
+## Setup — IAM and EC2
+
+```bash frame="terminal"
+aws iam create-role \
+  --role-name "$ROLE_NAME" \
+  --assume-role-policy-document file://.lab/ec2-trust.json \
+  --tags Key=Project,Value=s3-express-hot-lookup-walkthrough
+
+aws iam put-role-policy \
+  --role-name "$ROLE_NAME" \
+  --policy-name "s3x-hotlookup-s3" \
+  --policy-document file://.lab/ec2-permissions.json
+
+aws iam attach-role-policy \
+  --role-name "$ROLE_NAME" \
+  --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+aws iam create-instance-profile --instance-profile-name "$PROFILE_NAME"
+aws iam add-role-to-instance-profile \
+  --instance-profile-name "$PROFILE_NAME" \
+  --role-name "$ROLE_NAME"
+
+aws ec2 run-instances \
+  --image-id "$AMI_ID" \
+  --instance-type m7g.large \
+  --subnet-id "$SUBNET_ID" \
+  --security-group-ids "$SG_ID" \
+  --iam-instance-profile "Name=${PROFILE_NAME}" \
+  --user-data file://.lab/user-data.sh \
+  --associate-public-ip-address \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${NAME}-harness},{Key=Project,Value=s3-express-hot-lookup-walkthrough}]"
+```
+
+## Seed and observe
+
+Directory buckets reject `aws s3 sync` — use recursive `cp` for Express.
+
+```bash frame="terminal"
+aws s3 sync .lab/seed/hot/ "s3://${STD_BUCKET}/hot/"
+aws s3 cp .lab/seed/hot/ "s3://${DIR_BUCKET}/hot/" --recursive
+
+aws s3api list-objects-v2 --bucket "$STD_BUCKET" --prefix hot/ \
+  --query 'length(Contents)' --output text
+aws s3api list-objects-v2 --bucket "$DIR_BUCKET" --prefix hot/ \
+  --query 'length(Contents)' --output text
+```
+
+## Dashboard
+
+```bash frame="terminal"
+./scripts/demo.sh dash
+./scripts/demo.sh port-forward
+# or:
+aws ssm start-session \
+  --target "$(jq -r .instanceId .lab-state.json)" \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["8080"],"localPortNumber":["8080"]}'
+
+curl -sS "http://127.0.0.1:8080/api/stats" | jq '{
+  express: .express|{count,errors,p50_ms},
+  standard: .standard|{count,errors,p50_ms},
+  standard_over_express_p50
+}'
+```
+
+## Tear down (everything)
+
+```bash frame="terminal"
+export S3X_LAB_ALLOW_AWS=1
+./scripts/demo.sh down     # LAB_SUFFIX confirm — lab VPC, buckets, EC2, lab IAM
+./scripts/image.sh down    # ECR repo name confirm — ECR, CodeBuild, source bucket
+```
+
+Manual lab order (wrappers preferred; still run `image.sh down` after):
+
+```bash frame="terminal"
+aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
+aws s3 rm "s3://${STD_BUCKET}" --recursive
+aws s3api delete-bucket --bucket "$STD_BUCKET"
+aws s3 rm "s3://${DIR_BUCKET}" --recursive
+aws s3api delete-bucket --bucket "$DIR_BUCKET"
+# endpoints → subnet / routes / IGW → VPC → detach SSM policy → IAM
+```
+
+## Wrappers
+
+```bash frame="terminal"
+export S3X_LAB_ALLOW_AWS=1
+./scripts/image.sh up|build|status|down
+./scripts/demo.sh up|status|seed|harness|dash|port-forward|down
+```
+
+## References
+
+- [Creating directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-create.html)
+- [Using tags with directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-buckets-tagging.html)
+- [Endpoints for directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/endpoint-directory-buckets-AZ.html)
+- [IAM for S3 Express](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-security-iam.html)
+- [Authenticating and authorizing](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-authenticating-authorizing.html)
+- [Session Manager instance profile](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-getting-started-instance-profile.html)
+- [Start a Session Manager session](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-sessions-start.html)

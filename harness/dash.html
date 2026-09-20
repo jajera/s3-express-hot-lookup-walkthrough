@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>S3 Express hot lookup bakeoff</title>
+    <style>
+      :root {
+        --bg: #0b1214;
+        --panel: #121c20;
+        --text: #e8f2f4;
+        --muted: #8aa3ab;
+        --express: #2dd4bf;
+        --standard: #f59e0b;
+        --line: #1e2d33;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(900px 420px at 10% -10%, rgba(45, 212, 191, 0.14), transparent 55%),
+          radial-gradient(700px 380px at 90% 0%, rgba(245, 158, 11, 0.1), transparent 50%),
+          var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+      }
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 2rem 1.25rem 3rem;
+      }
+      h1 {
+        font-size: 1.6rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin: 0 0 0.35rem;
+      }
+      .sub { color: var(--muted); margin-bottom: 1.5rem; font-size: 0.95rem; }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+      }
+      @media (max-width: 720px) {
+        .grid { grid-template-columns: 1fr; }
+      }
+      .panel {
+        background: color-mix(in srgb, var(--panel) 92%, black);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 1rem 1.1rem 1.15rem;
+      }
+      .panel h2 {
+        margin: 0 0 0.75rem;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+      .panel.express h2 { color: var(--express); }
+      .panel.standard h2 { color: var(--standard); }
+      .metric {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding: 0.35rem 0;
+        border-top: 1px solid var(--line);
+        font-variant-numeric: tabular-nums;
+      }
+      .metric:first-of-type { border-top: 0; }
+      .metric span:last-child { font-weight: 600; font-size: 1.15rem; }
+      .diff {
+        margin-top: 1rem;
+        padding: 1.1rem 1.15rem 1.2rem;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .diff-headline {
+        font-size: 1.55rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
+        margin: 0 0 0.35rem;
+      }
+      .diff-headline .x { color: var(--express); }
+      .diff-delta {
+        color: var(--muted);
+        font-size: 0.95rem;
+        margin: 0 0 1.1rem;
+        font-variant-numeric: tabular-nums;
+      }
+      .diff-delta strong { color: var(--text); font-weight: 600; }
+      .race { display: grid; gap: 0.65rem; }
+      .race-row {
+        display: grid;
+        grid-template-columns: 7.5rem 1fr 4.5rem;
+        gap: 0.65rem;
+        align-items: center;
+      }
+      @media (max-width: 520px) {
+        .race-row { grid-template-columns: 5.5rem 1fr 3.75rem; gap: 0.45rem; }
+      }
+      .race-label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+      }
+      .race-label.express { color: var(--express); }
+      .race-label.standard { color: var(--standard); }
+      .race-track {
+        height: 14px;
+        border-radius: 999px;
+        background: var(--line);
+        overflow: hidden;
+      }
+      .race-fill {
+        display: block;
+        height: 100%;
+        border-radius: 999px;
+        width: 0%;
+        transition: width 0.35s ease;
+      }
+      .race-fill.ex { background: var(--express); }
+      .race-fill.st { background: var(--standard); }
+      .race-ms {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        font-size: 0.95rem;
+      }
+      .diff-foot {
+        margin-top: 0.85rem;
+        font-size: 0.75rem;
+        color: var(--muted);
+      }
+      .meta {
+        margin-top: 1.25rem;
+        font-size: 0.8rem;
+        color: var(--muted);
+        line-height: 1.55;
+        word-break: break-all;
+      }
+      .err { color: #f87171; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Shared hot lookup bakeoff</h1>
+      <p class="sub">
+        Live GET latency — S3 Express One Zone vs S3 Standard, same keys, same AZ.
+        Window refreshes every 2s.
+      </p>
+
+      <div class="grid">
+        <section class="panel express">
+          <h2>Express (directory)</h2>
+          <div class="metric"><span>p50</span><span id="ex-p50">—</span></div>
+          <div class="metric"><span>p90</span><span id="ex-p90">—</span></div>
+          <div class="metric"><span>p99</span><span id="ex-p99">—</span></div>
+          <div class="metric"><span>samples</span><span id="ex-n">0</span></div>
+          <div class="metric"><span>errors</span><span id="ex-err">0</span></div>
+        </section>
+        <section class="panel standard">
+          <h2>Standard (general purpose)</h2>
+          <div class="metric"><span>p50</span><span id="st-p50">—</span></div>
+          <div class="metric"><span>p90</span><span id="st-p90">—</span></div>
+          <div class="metric"><span>p99</span><span id="st-p99">—</span></div>
+          <div class="metric"><span>samples</span><span id="st-n">0</span></div>
+          <div class="metric"><span>errors</span><span id="st-err">0</span></div>
+        </section>
+      </div>
+
+      <div class="diff">
+        <p class="diff-headline" id="headline">Express is <span class="x">—</span> faster</p>
+        <p class="diff-delta" id="delta">Waiting for samples…</p>
+        <div class="race" title="p50 latency on a shared scale (Standard = full width)">
+          <div class="race-row">
+            <span class="race-label express">Express</span>
+            <div class="race-track"><i class="race-fill ex" id="race-ex"></i></div>
+            <span class="race-ms" id="race-ex-ms">—</span>
+          </div>
+          <div class="race-row">
+            <span class="race-label standard">Standard</span>
+            <div class="race-track"><i class="race-fill st" id="race-st"></i></div>
+            <span class="race-ms" id="race-st-ms">—</span>
+          </div>
+        </div>
+        <p class="diff-foot">Bars share one scale: Standard p50 = 100% width. Shorter = faster.</p>
+      </div>
+
+      <div class="meta" id="meta">Loading…</div>
+    </main>
+    <script>
+      const fmt = (v) => (v == null ? "—" : `${Number(v).toFixed(2)} ms`);
+      async function tick() {
+        try {
+          const r = await fetch("/api/stats", { cache: "no-store" });
+          const s = await r.json();
+          const ex = s.express || {};
+          const st = s.standard || {};
+          document.getElementById("ex-p50").textContent = fmt(ex.p50_ms);
+          document.getElementById("ex-p90").textContent = fmt(ex.p90_ms);
+          document.getElementById("ex-p99").textContent = fmt(ex.p99_ms);
+          document.getElementById("ex-n").textContent = ex.count ?? 0;
+          document.getElementById("ex-err").textContent = ex.errors ?? 0;
+          document.getElementById("st-p50").textContent = fmt(st.p50_ms);
+          document.getElementById("st-p90").textContent = fmt(st.p90_ms);
+          document.getElementById("st-p99").textContent = fmt(st.p99_ms);
+          document.getElementById("st-n").textContent = st.count ?? 0;
+          document.getElementById("st-err").textContent = st.errors ?? 0;
+
+          const ep = Number(ex.p50_ms);
+          const sp = Number(st.p50_ms);
+          const ratio = s.standard_over_express_p50;
+          const headline = document.getElementById("headline");
+          const delta = document.getElementById("delta");
+          if (Number.isFinite(ep) && Number.isFinite(sp) && ep > 0 && sp > 0) {
+            const x = ratio != null ? Number(ratio).toFixed(2) : (sp / ep).toFixed(2);
+            const saved = sp - ep;
+            headline.innerHTML = `Express is <span class="x">${x}×</span> faster`;
+            delta.innerHTML =
+              `Express saves <strong>~${saved.toFixed(1)} ms</strong> per GET at p50` +
+              ` <span style="opacity:.7">(${fmt(sp)} − ${fmt(ep)})</span>`;
+            // Equal scale: Standard = full track; Express proportional.
+            document.getElementById("race-st").style.width = "100%";
+            document.getElementById("race-ex").style.width = `${Math.min(100, (ep / sp) * 100)}%`;
+            document.getElementById("race-ex-ms").textContent = fmt(ep);
+            document.getElementById("race-st-ms").textContent = fmt(sp);
+          } else {
+            headline.innerHTML = `Express is <span class="x">—</span> faster`;
+            delta.textContent = "Waiting for samples…";
+            document.getElementById("race-ex").style.width = "0%";
+            document.getElementById("race-st").style.width = "0%";
+            document.getElementById("race-ex-ms").textContent = "—";
+            document.getElementById("race-st-ms").textContent = "—";
+          }
+
+          document.getElementById("meta").innerHTML = [
+            `Region <code>${s.region}</code> · uptime ${s.uptime_seconds}s · window ${s.window_seconds}s`,
+            `Express <code>${s.express_bucket}</code>`,
+            `Standard <code>${s.standard_bucket}</code>`,
+            `${s.object_count} keys under <code>${s.object_prefix}</code>`,
+          ].join("<br>");
+        } catch (e) {
+          document.getElementById("meta").innerHTML =
+            `<span class="err">Failed to load /api/stats: ${e}</span>`;
+        }
+      }
+      tick();
+      setInterval(tick, 2000);
+    </script>
+  </body>
+</html>

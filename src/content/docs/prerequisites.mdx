@@ -1,0 +1,79 @@
+---
+title: Prerequisites
+description: Account, profile, Region, Express AZ constraint, and dedicated VPC expectations after tooling is installed.
+sidebar:
+  label: Prerequisites
+---
+
+import Checklist from "@/components/Checklist.astro";
+import Tooltip from "@/components/Tooltip.astro";
+
+<Checklist
+  id="prerequisites"
+  items={[
+    "Install tooling page completed",
+    "AWS account and sandbox profile ready",
+    "Region set to ap-southeast-2",
+    "Express AZ apse2-az1 constraint understood",
+  ]}
+/>
+
+## Overview
+
+Finish [Install tooling](/install-tooling/) first. This page covers the AWS account shape and
+Express constraints before you create resources.
+
+This lab creates billable resources: a dedicated VPC, two S3 buckets (Standard +
+<Tooltip term="directory-bucket" />), an IAM role/instance profile, and an
+<code>m7g.large</code> EC2 instance running the <Tooltip term="harness" />.
+
+## What you need
+
+| Piece | Notes |
+| ----- | ----- |
+| Tooling | AWS CLI **≥ 2.15.0** (latest fine), jq — see [Install tooling](/install-tooling/) |
+| AWS account | Operator credentials with permission to create VPC, endpoints, buckets, IAM, and EC2 |
+| Named profile | `AWS_PROFILE=sandbox` — `demo.sh` refuses an implicit account |
+| Region | Lab Region is `ap-southeast-2` |
+| Express AZ | Only <Tooltip term="az-id" label="apse2-az1" /> in Sydney — place subnet + EC2 there |
+
+## Hard requirements
+
+- Directory buckets need both gateway endpoints:
+  `com.amazonaws.ap-southeast-2.s3` and `com.amazonaws.ap-southeast-2.s3express`.
+- Co-locate compute with the Express AZ ID. Crossing AZs adds latency and defeats the bakeoff.
+- Zonal object operations need <Tooltip term="create-session" label="CreateSession" /> on the
+  instance role.
+
+
+## Environment check
+
+```bash frame="terminal"
+export AWS_PROFILE=sandbox
+export AWS_REGION=ap-southeast-2
+aws sts get-caller-identity
+aws --version
+# expect aws-cli/2.15.0 or newer (latest fine)
+```
+
+Looks like (placeholder account):
+
+```json
+{
+  "UserId": "AROAEXAMPLE:session-name",
+  "Account": "123456789012",
+  "Arn": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_…/you"
+}
+```
+
+## Next
+
+Continue to [Architecture](/architecture/), then the [CLI overview](/cli/).
+
+## References
+
+- [S3 Express Regions and Zones](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-Regions-and-Zones.html)
+- [Directory bucket AZ networking](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-az-networking.html)
+- [Authenticating and authorizing](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-authenticating-authorizing.html)
+- [S3 pricing](https://aws.amazon.com/s3/pricing/)
+- [EC2 On-Demand pricing](https://aws.amazon.com/ec2/pricing/on-demand/)

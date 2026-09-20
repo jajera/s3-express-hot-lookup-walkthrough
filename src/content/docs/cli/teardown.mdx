@@ -1,0 +1,141 @@
+---
+title: Tear down
+description: Remove everything this walkthrough created — lab VPC and buckets, then ECR and CodeBuild.
+sidebar:
+  label: Tear down
+---
+
+import { Steps, Aside } from "@astrojs/starlight/components";
+import Checklist from "@/components/Checklist.astro";
+
+<Checklist
+  id="cli-teardown"
+  items={[
+    "Lab gone — EC2, buckets, VPC, endpoints, lab IAM",
+    "Image stack gone — ECR, CodeBuild, source bucket, CodeBuild role",
+    "No s3x-hotlookup- resources left in the account",
+  ]}
+/>
+
+## Overview
+
+Tear down means **remove everything** this walkthrough created. Two confirms, in order:
+
+```bash frame="terminal"
+export AWS_PROFILE=sandbox
+export AWS_REGION=ap-southeast-2
+export S3X_LAB_ALLOW_AWS=1
+./scripts/demo.sh down    # type LAB_SUFFIX
+./scripts/image.sh down   # type s3x-hotlookup-harness
+```
+
+| Step | Wrapper | Deletes |
+| ---- | ------- | ------- |
+| 1 | `demo.sh down` | EC2, Standard + directory buckets, VPC / endpoints / SG, lab IAM, `.lab-state.json` |
+| 2 | `image.sh down` | ECR repo + images, CodeBuild project, source bucket, CodeBuild role, `.image-state.json` |
+
+Skipping step 2 leaves billable ECR storage and the CodeBuild source bucket.
+
+```text
+demo.sh down
+  terminate EC2 → empty + delete both buckets
+  → VPC endpoints → subnet / routes / IGW → VPC → lab IAM
+
+image.sh down
+  → CodeBuild project → source bucket → ECR images + repo → CodeBuild role
+```
+
+## Steps
+
+<Steps>
+
+1. Remove the lab (`demo.sh down`).
+
+   ```bash frame="terminal"
+   export AWS_PROFILE=sandbox
+   export AWS_REGION=ap-southeast-2
+   export S3X_LAB_ALLOW_AWS=1
+   ./scripts/demo.sh down
+   ```
+
+   Looks like (verified; type your stored `LAB_SUFFIX` when prompted — IDs are yours):
+
+   ```text
+   This will delete VPC vpc-…, buckets, instance, and IAM for LAB_SUFFIX=20260920120148
+   Type the LAB_SUFFIX to confirm: 20260920120148
+   Waiting for instance termination…
+   + aws … ec2 terminate-instances --instance-ids i-…
+   + aws … s3api delete-bucket --bucket s3x-hotlookup-20260920120148-123456789012
+   + aws … s3api delete-bucket --bucket s3x-hotlookup-20260920120148--apse2-az1--x-s3
+   + aws … ec2 delete-vpc-endpoints --vpc-endpoint-ids vpce-… vpce-…
+   + aws … ec2 delete-subnet …
+   + aws … ec2 delete-route-table …
+   + aws … ec2 detach-internet-gateway …
+   + aws … ec2 delete-internet-gateway …
+   + aws … ec2 delete-vpc --vpc-id vpc-…
+   Teardown complete. Removed …/.lab-state.json
+   ```
+
+2. Remove the image pipeline (`image.sh down`).
+
+   Required for a clean account. Type `s3x-hotlookup-harness` to confirm.
+
+   ```bash frame="terminal"
+   export AWS_PROFILE=sandbox
+   export AWS_REGION=ap-southeast-2
+   export S3X_LAB_ALLOW_AWS=1
+   ./scripts/image.sh down
+   ```
+
+   Looks like (verified):
+
+   ```text
+   This deletes ECR repo s3x-hotlookup-harness, CodeBuild s3x-hotlookup-harness,
+   bucket s3x-hotlookup-cb-123456789012, and role s3x-hotlookup-codebuild
+   Type the ECR repository name to confirm: s3x-hotlookup-harness
+   + aws … ecr batch-delete-image …
+   + aws … ecr delete-repository --repository-name s3x-hotlookup-harness …
+   Image pipeline teardown complete.
+   ```
+
+3. Manual lab order (only if you cannot use the wrappers).
+
+   ```bash frame="terminal"
+   # stop harness container on the instance, then:
+   aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
+   aws ec2 wait instance-terminated --instance-ids "$INSTANCE_ID"
+
+   aws s3 rm "s3://${STD_BUCKET}" --recursive
+   aws s3api delete-bucket --bucket "$STD_BUCKET"
+   aws s3 rm "s3://${DIR_BUCKET}" --recursive
+   aws s3api delete-bucket --bucket "$DIR_BUCKET"
+
+   # delete vpc endpoints, then subnet/route/igw/vpc
+   # remove role from instance profile, delete profile, delete-role-policy, delete-role
+   # then still run: ./scripts/image.sh down
+   ```
+
+</Steps>
+
+## Verify
+
+Sweep with the [cleanup checklist](/reference/cleanup-checklist/). Nothing with the
+`s3x-hotlookup-` prefix should remain.
+
+<Aside type="danger">
+  Never delete a VPC, bucket, or role whose name lacks the lab prefix. The wrappers refuse names
+  outside <code>s3x-hotlookup-</code>.
+</Aside>
+
+## Next
+
+After the lab, read [Where Express fits](/guidance/where-express-fits/) — single-AZ latency is
+not multi-AZ durability; do not keep the only copy of important data on Express.
+
+## References
+
+- [S3 pricing](https://aws.amazon.com/s3/pricing/)
+- [EC2 On-Demand pricing](https://aws.amazon.com/ec2/pricing/on-demand/)
+- [Creating directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-create.html)
+- [Differences for directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-differences.html)
+- [Amazon ECR](https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html)

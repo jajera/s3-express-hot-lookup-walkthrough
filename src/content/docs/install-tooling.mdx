@@ -1,0 +1,157 @@
+---
+title: Install tooling
+description: Install AWS CLI and jq before you start. Docker runs on the lab EC2, not on your laptop.
+sidebar:
+  label: Install tooling
+---
+
+import { Aside, Tabs, TabItem } from "@astrojs/starlight/components";
+import Checklist from "@/components/Checklist.astro";
+
+<Checklist
+  id="install-tooling"
+  items={[
+    "AWS CLI at or above the minimum version",
+    "jq available for demo.sh",
+    "Profile and Region exports ready",
+  ]}
+/>
+
+## Overview
+
+Install and version-check these tools **before** [Prerequisites](/prerequisites/) and the
+walkthrough. The harness Docker container runs on the lab EC2 instance — you do **not** need
+Docker on your laptop.
+
+## Version matrix
+
+| Tool | Minimum | Notes |
+| ---- | ------- | ----- |
+| AWS CLI v2 | **2.15.0** | Directory-bucket / Express APIs need a current v2. Latest stable is fine. |
+| jq | 1.6+ | `scripts/demo.sh` reads `.lab-state.json` |
+| Session Manager plugin | optional | Needed only for `./scripts/demo.sh port-forward` (local dashboard) |
+| Docker | — | On EC2 only — harness image runs on the instance after bootstrap |
+
+<Aside type="caution" title="Minimum AWS CLI">
+  Anything older than <strong>2.15.0</strong> is too old for this lab. Prefer the
+  <strong>latest</strong> AWS CLI v2 from the official installer.
+</Aside>
+
+## Install AWS CLI v2
+
+Follow the official [install guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html).
+
+<Tabs>
+<TabItem label="Install script (latest)">
+
+```bash frame="terminal"
+curl -fsSL https://awscli.amazonaws.com/v2/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+aws --version
+```
+
+</TabItem>
+<TabItem label="User-local">
+
+```bash frame="terminal"
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+mkdir -p "$HOME/.local/bin" "$HOME/.local/share/aws-cli"
+./aws/install \
+  --bin-dir "$HOME/.local/bin" \
+  --install-dir "$HOME/.local/share/aws-cli" \
+  --update
+export PATH="$HOME/.local/bin:$PATH"
+aws --version
+```
+
+Put `export PATH="$HOME/.local/bin:$PATH"` in your shell profile so an older system CLI cannot
+shadow it. Use `awscli-exe-linux-aarch64.zip` on ARM.
+
+</TabItem>
+<TabItem label="System-wide update">
+
+```bash frame="terminal"
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install --update
+aws --version
+```
+
+</TabItem>
+</Tabs>
+
+### Confirm the version
+
+```bash frame="terminal"
+which aws
+aws --version
+```
+
+Looks like (version numbers vary — must be **≥ 2.15.0**):
+
+```text
+~/.local/bin/aws
+aws-cli/2.36.38 Python/3.14.6 Linux/… exe/x86_64.…
+```
+
+Gate check:
+
+```bash frame="terminal"
+aws --version
+# expect: aws-cli/2.… with version >= 2.15.0
+
+python3 - <<'PY'
+import subprocess
+v = subprocess.check_output(["aws", "--version"], text=True)
+parts = v.split("/")[1].split(" ")[0].split(".")
+maj, minor = int(parts[0]), int(parts[1])
+assert (maj, minor) >= (2, 15), v
+print("ok:", v.strip())
+PY
+```
+
+## Install jq
+
+```bash frame="terminal"
+# Fedora / RHEL-family example — use your distro equivalents
+sudo dnf install -y jq
+jq --version
+```
+
+Looks like:
+
+```text
+jq-1.7.1
+```
+
+## Configure the profile
+
+```bash frame="terminal"
+aws configure sso --profile sandbox
+# or reuse an existing SSO profile named sandbox
+export AWS_PROFILE=sandbox
+export AWS_REGION=ap-southeast-2
+aws sts get-caller-identity
+```
+
+`demo.sh` refuses to run without both variables set, and refuses AWS CLI versions below
+**2.15.0**.
+
+Optional — for [SSM port-forward to the dashboard](/cli/dashboard/):
+
+```bash frame="terminal"
+session-manager-plugin --version
+# if missing, install:
+# https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html
+```
+
+## Next
+
+Continue to [Prerequisites](/prerequisites/), then [Architecture](/architecture/).
+
+## References
+
+- [Installing or updating the AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
+- [AWS CLI install script](https://awscli.amazonaws.com/v2/install.sh)
+- [Install the Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)

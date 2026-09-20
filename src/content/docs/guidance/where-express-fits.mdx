@@ -1,0 +1,79 @@
+---
+title: Where Express fits
+description: Single-AZ trade-offs — do not treat Express as the only durable copy of important data.
+sidebar:
+  label: Where Express fits
+---
+
+import { Aside } from "@astrojs/starlight/components";
+import Checklist from "@/components/Checklist.astro";
+import Tooltip from "@/components/Tooltip.astro";
+import failureDomain from "@/assets/diagrams/where-express-fits.svg";
+
+<Checklist
+  id="guidance-express-fits"
+  items={[
+    "Treat Express as single-AZ hot storage, not multi-AZ durability",
+    "Keep a regenerable source or a multi-AZ durable copy of anything you cannot lose",
+  ]}
+/>
+
+## Overview
+
+<Tooltip term="s3-express" label="S3 Express One Zone" /> wins on same-AZ GET latency by
+storing objects in **one** Availability Zone next to compute. That is not Standard’s multi-AZ
+durability model.
+
+## The failure domain is the AZ
+
+| What AWS designs for | What that means for you |
+| -------------------- | ----------------------- |
+| Redundant devices **inside** one AZ | Disk / host / rack failures are handled within that zone |
+| ~99.95% availability **within** that AZ | An AZ outage or loss can take the directory bucket with it |
+| Co-located compute for lowest latency | Cross-AZ clients pay extra latency; same-AZ is the intended path |
+
+In the unlikely case of loss or damage to all or part of an Availability Zone, data in the
+Express One Zone storage class **may be lost**.
+
+<figure>
+  <img src={failureDomain.src} alt="The Express directory bucket lives inside one Availability Zone (apse2-az1) — its failure domain, where an AZ-wide event can lose the objects. A multi-AZ Standard bucket or regenerable source holds the authoritative copy. The application reads hot GETs from Express, treats Standard as authoritative and rebuilds from it, and re-seeds Express from that durable copy." />
+</figure>
+
+<Aside type="caution">
+  Do <strong>not</strong> put the only copy of irreplaceable data in a directory bucket. Express
+  is for latency-sensitive hot paths — feature flags, lookup tables, ML scratch, shared caches —
+  where you can rebuild or re-copy from somewhere durable.
+</Aside>
+
+## Do and don’t
+
+| Do | Don’t |
+| -- | ----- |
+| Keep Express for shared hot keys you can rebuild or re-seed | Treat Express as a drop-in for Standard archives |
+| Keep an authoritative copy in multi-AZ storage (or another system of record) | Assume AZ failure only means “retry later” for Express objects |
+| Co-locate compute with the directory bucket’s AZ ID | Expect the same p50 from another AZ or Region |
+| Plan CreateSession / directory-bucket IAM and `s3express` networking | Assume every general-purpose S3 feature exists on directory buckets |
+| Copy objects that must survive long-term to a Regional class | Leave production state only in Express |
+
+A common pattern: stage for speed on Express, then **copy** objects that must persist into a
+multi-AZ S3 storage class (for example with Batch Operations).
+
+## Lab vs production
+
+| Lab showed | You still design |
+| ---------- | ---------------- |
+| Same-AZ Express GETs can beat Standard on p50 | Failure mode if the Express AZ is unavailable |
+| Dual gateway endpoints + CreateSession plumbing | How clients fall back or rebuild when Express is gone |
+| Harness ratios under quiet load | Quotas, feature gaps, and cost for your key count and QPS |
+
+This lab’s Express AZ ID is `apse2-az1` only — zonal capacity, not “any AZ in the Region.”
+
+## References
+
+- [High-performance directory buckets (Availability Zones)](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-bucket-high-performance.html)
+- [S3 Express Regions and Zones](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-Regions-and-Zones.html)
+- [Optimizing S3 Express One Zone performance (co-locate)](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-optimizing-performance-design-patterns.html)
+- [Differences for directory buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-differences.html)
+- [Guidance: high-transaction workloads on S3 Express One Zone (Reliability — AZ loss)](https://docs.aws.amazon.com/solutions/writing-high-transaction-workloads-on-amazon-s3-express-one-zone/)
+- [S3 Express One Zone product](https://aws.amazon.com/s3/storage-classes/express-one-zone/)
+- [Amazon S3 FAQs (Express availability)](https://aws.amazon.com/s3/faqs/)
