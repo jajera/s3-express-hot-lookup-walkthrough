@@ -5,11 +5,9 @@ import starlightImageZoom from "starlight-image-zoom";
 import { starlightBasePath } from "starlight-base-path";
 import mermaid from "astro-mermaid";
 
-// Project Pages until s3-express-hot-lookup-walkthrough.johna.kiwi DNS exists.
-// Then: site → https://s3-express-hot-lookup-walkthrough.johna.kiwi, base → "/",
-// restore public/CNAME, and re-enable the Pages custom domain.
-const site = "https://jajera.github.io";
-const base = "/s3-express-hot-lookup-walkthrough/";
+// Custom domain root: https://s3-express-hot-lookup-walkthrough.johna.kiwi
+const site = "https://s3-express-hot-lookup-walkthrough.johna.kiwi";
+const base = "/";
 
 export default defineConfig({
   site,
