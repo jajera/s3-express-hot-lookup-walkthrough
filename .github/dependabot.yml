@@ -11,6 +11,8 @@ updates:
     ignore:
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
+      - dependency-name: "mermaid"
+        update-types: ["version-update:semver-major"]
     groups:
       production:
         dependency-type: production
